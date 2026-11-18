@@ -1,0 +1,118 @@
+{
+  "formatVersion": 1,
+  "parser": "Verilator 5.050 2026-07-01 rev vUNKNOWN-built20260702",
+  "generatedAt": "2026-11-18T10:58:34.757Z",
+  "top": "demo_top",
+  "sourceHash": "8942ab0b45543b58c8897b5e325b3788a2c0b0628c0dd020dc62c8aaa8ed098b",
+  "sourceFiles": {
+    "demo_cell.v": "f5b9bacb1eefbfe74572f6ee19869ad7d72714f2b21a33bfb9bfa41b06c19e20",
+    "demo_engine.v": "07bbb9b75ae4771e40a2159fe41d92dc8894746e116e39577c22ea34279d4960",
+    "demo_top.v": "d3c91c928b905cad5a5238dae410357bcce8017e09bdf5be566a7290a82cdf18"
+  },
+  "sourceMtimes": {
+    "demo_cell.v": 1794999449833.3457,
+    "demo_engine.v": 1794999449832.3037,
+    "demo_top.v": 1794999449831.7754
+  },
+  "modules": {
+    "demo_top": {
+      "file": "demo_top.v",
+      "start": 1,
+      "end": 25,
+      "ports": 6,
+      "signals": 8,
+      "cells": 1,
+      "assignments": 2,
+      "shard": "modules/demo_top.json"
+    },
+    "demo_engine": {
+      "file": "demo_engine.v",
+      "start": 1,
+      "end": 33,
+      "ports": 6,
+      "signals": 9,
+      "cells": 1,
+      "assignments": 4,
+      "shard": "modules/demo_engine.json"
+    },
+    "demo_cell": {
+      "file": "demo_cell.v",
+      "start": 1,
+      "end": 9,
+      "ports": 3,
+      "signals": 3,
+      "cells": 0,
+      "assignments": 1,
+      "shard": "modules/demo_cell.json"
+    }
+  },
+  "instances": [
+    {
+      "path": "demo_top",
+      "module": "demo_top",
+      "parent": null,
+      "cell": null,
+      "depth": 0
+    },
+    {
+      "path": "demo_top/u_engine",
+      "module": "demo_engine",
+      "parent": "demo_top",
+      "cell": "u_engine",
+      "depth": 1
+    },
+    {
+      "path": "demo_top/u_engine/u_cell",
+      "module": "demo_cell",
+      "parent": "demo_top/u_engine",
+      "cell": "u_cell",
+      "depth": 2
+    }
+  ],
+  "instanceByPath": {
+    "demo_top": {
+      "path": "demo_top",
+      "module": "demo_top",
+      "parent": null,
+      "cell": null,
+      "depth": 0
+    },
+    "demo_top/u_engine": {
+      "path": "demo_top/u_engine",
+      "module": "demo_engine",
+      "parent": "demo_top",
+      "cell": "u_engine",
+      "depth": 1
+    },
+    "demo_top/u_engine/u_cell": {
+      "path": "demo_top/u_engine/u_cell",
+      "module": "demo_cell",
+      "parent": "demo_top/u_engine",
+      "cell": "u_cell",
+      "depth": 2
+    }
+  },
+  "scope": {
+    "sourceRoot": ".",
+    "rtlDirs": [
+      "."
+    ],
+    "includes": [],
+    "blackboxes": []
+  },
+  "stats": {
+    "modules": 3,
+    "designModules": 3,
+    "roots": [
+      "demo_top"
+    ],
+    "instances": 3,
+    "signals": 20,
+    "cells": 2,
+    "assignments": 7,
+    "sourceFiles": 3,
+    "hashed": true,
+    "sourceLines": 70
+  },
+  "boundary": "端口连接来自 Verilator elaborate AST；内部引用来自赋值 AST。IP/BD 黑盒只保留边界端口，不展开内部。复杂位选、拼接和宏展开保留为表达式连接，不做形式化等价证明。"
+}
