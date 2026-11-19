@@ -66,7 +66,7 @@ struct Settings {
   std::wstring netgraphDir;
   std::wstring netgraphSourceRoot;
   std::wstring topModule = L"demo_top";
-  int upLevels = 2;
+  int upLevels = 0;
   int downLevels = 8;
   int maxFiles = 2000;
   int maxIndexMs = 2000;
@@ -254,7 +254,7 @@ void LoadSettings() {
     ? g_settings.sourceRoots.front()
     : AbsolutePath(netgraphSourceRoot);
   g_settings.topModule = ReadIni(L"topModule", L"demo_top");
-  g_settings.upLevels = ReadIniInt(L"upLevels", 2, 0, 8);
+  g_settings.upLevels = ReadIniInt(L"upLevels", 0, 0, 8);
   g_settings.downLevels = ReadIniInt(L"downLevels", 8, 0, 32);
   g_settings.maxFiles = ReadIniInt(L"maxFiles", 2000, 10, 20000);
   g_settings.maxIndexMs = ReadIniInt(L"maxIndexMs", 2000, 100, 15000);
@@ -1700,7 +1700,7 @@ bool ReadSettingsInt(HWND hwnd, int id, const wchar_t* label, int minValue, int 
 }
 
 void ResetSettingsDialog(HWND hwnd) {
-  SetWindowTextW(GetDlgItem(hwnd, kIdSettingsUpLevels), L"2");
+  SetWindowTextW(GetDlgItem(hwnd, kIdSettingsUpLevels), L"0");
   SetWindowTextW(GetDlgItem(hwnd, kIdSettingsDownLevels), L"8");
   SetWindowTextW(GetDlgItem(hwnd, kIdSettingsMaxFiles), L"2000");
   SetWindowTextW(GetDlgItem(hwnd, kIdSettingsMaxIndexMs), L"2000");

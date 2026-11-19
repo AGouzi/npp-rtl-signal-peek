@@ -102,7 +102,7 @@ netgraphDir=demo\netgraph
 netgraphSourceRoot=demo\rtl
 topModule=demo_top
 clickModifier=Ctrl
-upLevels=2
+upLevels=0
 downLevels=8
 maxFiles=2000
 maxIndexMs=2000
@@ -114,7 +114,7 @@ excludeDirs=archive;backup;doc;ai_output;.Xil
 - `netgraphDir`：Verilator AST 连接图目录；作为显式覆盖使用。
 - `netgraphSourceRoot`：`netgraphDir` 对应的源码根目录；该目录内使用 AST 精确连接。
 - `topModule`：顶层模块名。
-- `upLevels`：从当前文件目录最多向上几层，默认 `2`；`0` 表示只看当前目录。
+- `upLevels`：从当前文件目录最多向上几层，默认 `0`，只扫描当前目录。
 - `downLevels`：向下递归层数，默认 `8`。
 - `maxFiles`：候选范围最多索引多少个 RTL 文件，默认 `2000`；超过时退回上一层或标记部分结果。
 - `maxIndexMs`：模块索引时间预算，默认 `2000` 毫秒；超时返回已有结果。
