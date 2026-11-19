@@ -35,14 +35,20 @@
 
 两种方式：
 
-1. 预编译包：把 `dist\RtlSignalPeek.zip` 解压到 Notepad++ 插件目录。
-2. 源码安装：需要 MinGW-w64 g++ 和 Node.js，运行 `.\build.ps1 -Install`；脚本会编译 DLL、打包并复制到插件目录，同时保留已有的 `RtlSignalPeek.ini`。
+1. **预编译包（推荐）**：从 [Releases](https://github.com/AGouzi/npp-rtl-signal-peek/releases/latest) 下载 `RtlSignalPeek.zip`。不要下载 GitHub 的 `Code -> Download ZIP`，那是源码，不包含 DLL。
+2. **源码安装**：需要 MinGW-w64 g++ 和 Node.js，运行 `.\build.ps1 -Install`；脚本会编译 DLL、打包并复制到插件目录，同时保留已有的 `RtlSignalPeek.ini`。
+
+安装预编译包前先关闭 Notepad++，把 ZIP **里面的内容**解压到下面的目录。不要再套一层 `RtlSignalPeek`：
 
 目标目录：
 
 ```text
 <Notepad++ 安装目录>\plugins\RtlSignalPeek\
 ```
+
+正确结果是能直接看到 `plugins\RtlSignalPeek\RtlSignalPeek.dll`。
+
+插件查询需要 64 位 [Node.js](https://nodejs.org/)。请确保 `node.exe` 已加入 `PATH`，或在 `RtlSignalPeek.ini` 中把 `nodeExe` 设置为实际路径。
 
 目录内至少需要：
 
