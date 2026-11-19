@@ -117,6 +117,7 @@ HBRUSH g_hoverBrush = nullptr;
 HBRUSH g_selectedBrush = nullptr;
 int g_hoverIndex = -1;
 int g_previewIndex = -1;
+int g_previewTargetLine = -1;
 bool g_trackingListMouse = false;
 bool g_hasPopupAnchor = false;
 POINT g_popupAnchor{};
@@ -132,6 +133,7 @@ std::map<HWND, WNDPROC> g_scintillaProc;
 
 bool CreatePanel();
 void HidePanel();
+void CenterPreviewLine(int targetLine);
 
 std::wstring Lower(std::wstring value) {
   for (wchar_t& ch : value) ch = static_cast<wchar_t>(towlower(ch));
@@ -754,6 +756,7 @@ void HighlightPreviewSignal(const std::wstring& signal, const PreviewThemeStyle&
 
 void SetPreviewMessage(const std::wstring& message) {
   if (!g_preview) return;
+  g_previewTargetLine = -1;
   const PreviewTheme theme = LoadPreviewTheme();
   SendMessageW(g_preview, EM_SETBKGNDCOLOR, 0, theme.background);
   SetWindowTextW(g_preview, message.c_str());
@@ -799,6 +802,7 @@ void LayoutPanel(HWND panel) {
   MoveWindow(g_list, kPanelPadding, contentTop, leftWidth, contentHeight, TRUE);
   MoveWindow(g_preview, kPanelPadding + leftWidth + kListGap, contentTop, rightWidth, contentHeight, TRUE);
   MoveWindow(g_status, kPanelPadding, height - kPanelPadding - kStatusHeight, contentWidth, kStatusHeight, TRUE);
+  if (g_previewTargetLine >= 0) CenterPreviewLine(g_previewTargetLine);
 }
 
 void PositionPopup(HWND panel) {
@@ -849,13 +853,72 @@ void ApplyPreviewFont(const PreviewTheme& theme) {
   SendMessageW(g_preview, EM_SETCHARFORMAT, SCF_ALL, reinterpret_cast<LPARAM>(&format));
 }
 
-void UpdatePreview(int index) {
+int PreviewLineHeightPx() {
+  if (!g_preview) return 0;
+  const int lineCount = static_cast<int>(SendMessageW(g_preview, EM_GETLINECOUNT, 0, 0));
+  if (lineCount >= 2) {
+    int probeLine = static_cast<int>(SendMessageW(g_preview, EM_GETFIRSTVISIBLELINE, 0, 0));
+    probeLine = std::clamp(probeLine, 0, lineCount - 2);
+    const LONG firstStart = static_cast<LONG>(SendMessageW(
+      g_preview, EM_LINEINDEX, static_cast<WPARAM>(probeLine), 0));
+    const LONG nextStart = static_cast<LONG>(SendMessageW(
+      g_preview, EM_LINEINDEX, static_cast<WPARAM>(probeLine + 1), 0));
+    if (firstStart >= 0 && nextStart > firstStart) {
+      const int firstY = GET_Y_LPARAM(SendMessageW(
+        g_preview, EM_POSFROMCHAR, static_cast<WPARAM>(firstStart), 0));
+      const int nextY = GET_Y_LPARAM(SendMessageW(
+        g_preview, EM_POSFROMCHAR, static_cast<WPARAM>(nextStart), 0));
+      if (nextY > firstY) return nextY - firstY;
+    }
+  }
+
+  HDC dc = GetDC(g_preview);
+  if (!dc) return 0;
+  HGDIOBJ oldFont = SelectObject(dc, g_codeFont ? g_codeFont : g_uiFont);
+  TEXTMETRICW metrics{};
+  const int lineHeight = GetTextMetricsW(dc, &metrics)
+    ? metrics.tmHeight + metrics.tmExternalLeading
+    : 0;
+  if (oldFont) SelectObject(dc, oldFont);
+  ReleaseDC(g_preview, dc);
+  return lineHeight;
+}
+
+int PreviewVisibleLineCount() {
+  if (!g_preview) return 1;
+  RECT rect{};
+  SendMessageW(g_preview, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&rect));
+  int height = rect.bottom - rect.top;
+  if (height <= 0) {
+    GetClientRect(g_preview, &rect);
+    height = rect.bottom - rect.top;
+  }
+  const int lineHeight = PreviewLineHeightPx();
+  if (height <= 0 || lineHeight <= 0) return 1;
+  return std::max(1, (height + lineHeight / 2) / lineHeight);
+}
+
+void CenterPreviewLine(int targetLine) {
+  if (!g_preview || targetLine < 0) return;
+  const int lineCount = static_cast<int>(SendMessageW(g_preview, EM_GETLINECOUNT, 0, 0));
+  if (lineCount <= 0) return;
+  targetLine = std::clamp(targetLine, 0, lineCount - 1);
+  const int firstVisible = static_cast<int>(SendMessageW(
+    g_preview, EM_GETFIRSTVISIBLELINE, 0, 0));
+  const int visibleLines = PreviewVisibleLineCount();
+  const int desiredFirst = std::max(0, targetLine - visibleLines / 2);
+  if (desiredFirst != firstVisible) {
+    SendMessageW(g_preview, EM_LINESCROLL, 0, desiredFirst - firstVisible);
+  }
+}
+
+void UpdatePreview(int index, bool force = false) {
   if (!g_preview) return;
   if (index < 0 || static_cast<size_t>(index) >= g_locations.size()) {
     g_previewIndex = -1;
     return;
   }
-  if (index == g_previewIndex && GetWindowTextLengthW(g_preview) > 0) return;
+  if (!force && index == g_previewIndex && GetWindowTextLengthW(g_preview) > 0) return;
   g_previewIndex = index;
   const Location& location = g_locations[static_cast<size_t>(index)];
   std::vector<std::wstring> lines = LoadLines(location.file, true);
@@ -866,8 +929,10 @@ void UpdatePreview(int index) {
     const int lineCount = static_cast<int>(lines.size());
     int digits = 3;
     for (int count = lineCount; count >= 1000; count /= 10) ++digits;
+    const int paddingLines = std::max(1, PreviewVisibleLineCount() + 2);
     std::wstring text;
-    text.reserve(static_cast<size_t>(lineCount) * 40);
+    text.reserve(static_cast<size_t>(lineCount + paddingLines * 2) * 40);
+    for (int i = 0; i < paddingLines; ++i) text += L"\r\n";
     for (int i = 0; i < lineCount; ++i) {
       const int number = i + 1;
       const std::wstring numberText = std::to_wstring(number);
@@ -877,6 +942,7 @@ void UpdatePreview(int index) {
       text += lines[static_cast<size_t>(i)];
       text += L"\r\n";
     }
+    for (int i = 0; i < paddingLines; ++i) text += L"\r\n";
 
     SendMessageW(g_preview, WM_SETREDRAW, FALSE, 0);
     SendMessageW(g_preview, EM_SETBKGNDCOLOR, 0, theme.background);
@@ -888,7 +954,7 @@ void UpdatePreview(int index) {
     }
 
     const int maxLine = static_cast<int>(SendMessageW(g_preview, EM_GETLINECOUNT, 0, 0));
-    const int targetLine = std::max(0, std::min(location.line - 1, maxLine - 1));
+    const int targetLine = std::max(0, std::min(location.line - 1 + paddingLines, maxLine - 1));
     const LONG start = static_cast<LONG>(SendMessageW(g_preview, EM_LINEINDEX, targetLine, 0));
     LONG end = static_cast<LONG>(SendMessageW(g_preview, EM_LINEINDEX, targetLine + 1, 0));
     if (end < 0) end = static_cast<LONG>(GetWindowTextLengthW(g_preview));
@@ -901,11 +967,8 @@ void UpdatePreview(int index) {
     SendMessageW(g_preview, EM_SETSEL, 0, 0);
     SendMessageW(g_preview, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(g_preview, nullptr, TRUE);
-
-    const int first = static_cast<int>(SendMessageW(g_preview, EM_GETFIRSTVISIBLELINE, 0, 0));
-    const int visible = 20;
-    const int delta = targetLine - first - visible / 2;
-    if (delta != 0) SendMessageW(g_preview, EM_LINESCROLL, 0, delta);
+    g_previewTargetLine = targetLine;
+    CenterPreviewLine(targetLine);
   }
 
   if (g_status) {
@@ -1326,6 +1389,11 @@ LRESULT CALLBACK PanelProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
       break;
     case WM_SIZE:
       LayoutPanel(hwnd);
+      return 0;
+    case WM_EXITSIZEMOVE:
+      if (g_previewIndex >= 0 && static_cast<size_t>(g_previewIndex) < g_locations.size()) {
+        UpdatePreview(g_previewIndex, true);
+      }
       return 0;
     case WM_ERASEBKGND: {
       RECT rect{};
