@@ -6,6 +6,11 @@
 
 以演示文件中的 `engine_data` 为例：左侧按模块分组列出端口、赋值、例化与使用片段，右侧显示完整源码并居中高亮目标行。
 
+> [!IMPORTANT]
+> 本仓库只保存源码，**不包含**可直接加载的 `RtlSignalPeek.dll`。不要下载 GitHub 的 `Code -> Download ZIP`，那是源码包，安装后插件不会出现在 Notepad++ 中。
+>
+> 请从 [Releases](https://github.com/AGouzi/npp-rtl-signal-peek/releases/latest) 下载 `RtlSignalPeek.zip`，再按下方“安装”章节解压到 `plugins\RtlSignalPeek\`。查询功能还需要 64 位 Node.js。
+
 ## 设计原理
 
 - **点击即查询，不常驻解析**：C++ 插件只负责取光标下的标识符、弹出面板和读取源码片段；解析与连接追踪交给 `js\query.js`，每次点击启动一个 `node` 进程，查询完即退出。查询进程异常不会带崩 Notepad++。
