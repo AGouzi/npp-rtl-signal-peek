@@ -29,6 +29,16 @@ if (-not $Gxx) {
 if (-not $Gxx) {
   throw "g++ not found. Pass -Gxx <path-to-g++.exe>."
 }
+$gxxDir = Split-Path -Parent $Gxx
+if ($gxxDir) {
+  $env:PATH = "$gxxDir;$env:PATH"
+}
+$target = (& $Gxx -dumpmachine).Trim()
+$archFlags = @()
+if ($target -like "i686-*") {
+  # MSYS2 GCC 16 scans libmingw32 before libmsvcrt pulls in the SEH handler.
+  $archFlags += "-Wl,-u,___mingw_SEH_error_handler"
+}
 
 if ($Install -and -not $NotepadPlusPlusDir) {
   $notepadCandidates = @(
@@ -53,7 +63,7 @@ New-Item -ItemType Directory -Force -Path $buildDir, $distRoot | Out-Null
 $dll = Join-Path $buildDir "RtlSignalPeek.dll"
 & $Gxx -std=c++20 -O2 -shared -static -DUNICODE -D_UNICODE `
   -finput-charset=UTF-8 -fexec-charset=UTF-8 `
-  -Ivendor (Join-Path $root "src\RtlSignalPeek.cpp") `
+  -Ivendor @archFlags (Join-Path $root "src\RtlSignalPeek.cpp") `
   -o $dll `
   -luser32 -lgdi32 -lcomctl32 -lshlwapi -lole32 -loleaut32 -luuid
 if ($LASTEXITCODE -ne 0) {
