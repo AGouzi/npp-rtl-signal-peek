@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Project Version="7" Path="proj.xpr">
+  <FileSet Name="sources_1" Type="DesignSrcs">
+    <File Path="$PPRDIR/rtl/top.v"/>
+    <File Path="$PSRCDIR/rtl/gate&amp;and.v"/>
+    <File Path="..\shared\child.v"/>
+    <File Path="$PPRDIR/rtl/top.v"/>
+    <File Path="$PPRDIR/rtl_old/stale.v" IsEnabled="0"/>
+    <File Path="$PPRDIR/constraints/top.xdc"/>
+    <File Path='$PPRDIR/rtl/missing.v'/>
+  </FileSet>
+</Project>

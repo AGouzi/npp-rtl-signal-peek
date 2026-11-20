@@ -72,6 +72,7 @@ RtlSignalPeek.ini
 js\query.js
 js\netgraph-client.js
 js\hierarchy.js
+js\project-files.js
 tools\build_netgraph.js
 tools\netgraph-core.js
 demo\rtl\
@@ -130,12 +131,21 @@ excludeDirs=archive;backup;doc;ai_output;.Xil
 当前文件不在任何 `sourceRoot` 或固定工程根下时，查询脚本按“本地优先”推导范围：
 
 1. 从文件目录向上最多 6 层寻找强工程标记：`*.xpr`、`*.xise`、`*.qpf`、`*.qsf`、`*.gprj`、`*.prj`、`*.spj`，或当前文件确实位于其中的 `*.srcs` 目录。
-2. 标记目录必须能通过预算探测：至少包含一个 RTL 文件，且不超过 `maxFiles`；否则忽略，避免把多工程公共父目录当成工程根。
-3. 没有可用标记时，从当前目录向上最多 `upLevels` 层，选择不超过 `maxFiles` 的最大范围；遇到 Desktop、`%USERPROFILE%`、盘符根目录立即停止。
-4. 当前文件本身就在 Desktop 等容器目录时，默认只扫描当前层，不递归子目录；需要跨子目录时用菜单固定工程根。
-5. 向下递归最多 `downLevels` 层；`maxFiles` 或 `maxIndexMs` 超限时状态栏标记“已限制”或“部分源码”。
+2. 确定范围根后，优先使用工程文件表，而不是递归扫描整个目录：
+   - 显式 `--filelist <path>`；
+   - 显式 `--xpr <path>`；
+   - `<工程根>\.rtl-peek\filelist.txt`；
+   - `<工程根>\*.xpr`（优先选择当前文件所在 `.srcs` 对应的 `.xpr`，其次选与根目录同名的，再按文件名排序取第一个并给出警告）；
+   - 以上都没有可用文件时，才回退到目录扫描。
+3. Vivado `.xpr` 只取 `DesignSrcs` 文件集中的 HDL 条目，跳过 `SimulationSrcs`、`Constrs`、`BlockSrcs`；`$PSRCDIR` 按 `<工程名>.srcs` 解析，`$PPRDIR` 按 `.xpr` 所在目录解析。支持单双引号、XML 实体和 `IsEnabled="0"` 跳过；非 HDL 条目静默跳过，缺失的 HDL 文件会给出警告。文件表为空或全部缺失时回退目录扫描，并明确标记。
+4. 标记目录必须能通过预算探测：至少包含一个 RTL 文件，且不超过 `maxFiles`；否则忽略，避免把多工程公共父目录当成工程根。
+5. 没有可用标记时，从当前目录向上最多 `upLevels` 层，选择不超过 `maxFiles` 的最大范围；遇到 Desktop、`%USERPROFILE%`、盘符根目录立即停止。
+6. 当前文件本身就在 Desktop 等容器目录时，默认只扫描当前层，不递归子目录；需要跨子目录时用菜单固定工程根。
+7. 向下递归最多 `downLevels` 层；`maxFiles` 或 `maxIndexMs` 超限时状态栏标记“已限制”或“部分源码”。工程文件表超过 `maxFiles` 时同样截断并明确标记，不会静默丢弃。
 
-目录名不再决定工程边界：`rtl`、`src`、`hdl` 等只用于辅助扫描，代码放在任意命名文件夹里也会以当前目录为起点。Vivado 工程仍然优先识别 `*.srcs`；`.runs`、`.cache`、`.hw`、`.sim`、`.ip_user_files`、`ip`、`bd`、`_work` 等生成/临时目录，以及 `*_sim_netlist.v`、`*_rfs.v` 等生成文件会被跳过。
+工程文件表是权威来源：有 `.xpr` 时，`rtl_old`、`backup_2024` 等未登记目录不会进入索引，`maxFiles` 也不会先被这些旧文件占满。状态栏会显示 `工程文件表 .xpr（N 文件）`、`工程文件表 filelist（N 文件）` 或 `目录扫描（N 文件）`。`.rtl-peek\filelist.txt` 及 `--filelist` 的相对路径按文件表所在目录解析；`+incdir+`/`-I` 会加入包含路径，嵌套 `-f` 会递归展开并做循环保护。
+
+目录扫描只作为回退：`rtl`、`src`、`hdl` 等目录名只用于辅助扫描，代码放在任意命名文件夹里也会以当前目录为起点。Vivado 工程仍然优先识别 `*.srcs`；`.runs`、`.cache`、`.hw`、`.sim`、`.ip_user_files`、`ip`、`bd`、`_work` 等生成/临时目录，以及 `rtl_old`、`backup_2024` 这类明确备份目录，还有 `*_sim_netlist.v`、`*_rfs.v` 等生成文件都会被跳过；`copy_engine`、`backup_ram` 这类正常模块目录会保留。工程文件表里的 `..\shared\a.v` 会以 `../shared/a.v` 记录，参与连接图新鲜度检查，不会压成同名 basename。Quartus `.qsf` 在本版本仍只作为工程根标记，源码发现仍走目录扫描。
 
 固定工程根由菜单管理，记录在 `%APPDATA%\RtlSignalPeek\scopes.txt`；按目录最长匹配生效，不需要手写 INI。独立 `.v` 文件夹没有 `netgraph` 时会建立模块索引并按例化端口和 `assign` 跟踪；索引失败时才退回同名文本匹配。
 
@@ -181,12 +191,18 @@ node tools\build_netgraph.js `
 
 - `--source-root`：工程根，决定 `.rtl-peek\netgraph` 的位置和清单里的相对路径。
 - `--rtl`：可重复。只扫描这些目录，默认扫描 `<工程根>\*.srcs\sources_1`；递归包含子目录，跳过备份、`*_sim_netlist`、`tb_*` 和生成目录。
+- `--filelist <path>`：使用通用文件表（`.f`/`.lst`/`.txt`），支持注释、引号路径、`+incdir+`/`-I` 包含目录和嵌套 `-f`；相对路径按文件表所在目录解析。
+- `--xpr <path>`：直接读取 Vivado `.xpr` 的设计源文件表（`DesignSrcs`），支持 `$PPRDIR`/`$PSRCDIR`、XML 实体和 `IsEnabled="0"`；需要仿真文件时可在 `project-files.js` 中传 `includeSimulation`。
 - `--top`：主顶层模块。主树之外的独立模块会自动作为补充根再 elaborate 一次，因此打开任意模块都能查。
 - `--include`：可重复，传给 Verilator 的 `-I` 头文件目录。
 - `--blackbox`：可重复，手写的 IP/原语空壳，只保留端口连接。
 - `--blackbox-port`：可重复，从 IP wrapper 源码解析端口并自动生成黑盒，适合不展开的 IP/BD wrapper。
 - `--out`：输出目录，默认 `<工程根>\.rtl-peek\netgraph`。
 - `--keep-temp`：保留临时目录，便于排查 Verilator 错误。
+
+源码输入优先级：显式 `--filelist` > 显式 `--xpr` > 显式 `--rtl` > `<工程根>\.rtl-peek\filelist.txt` > 自动识别的根目录 `.xpr` > `.srcs` 目录扫描。未提供 `--filelist`/`--xpr`/`--rtl` 时，`build_netgraph.js` 与查询脚本使用同一套文件表优先级，不会出现文件集合不一致。
+
+文件表中的 `.vh`/`.svh` 会参与文本索引和连接图新鲜度检查，但不会作为编译单元传给 Verilator；其所在目录会自动加入 `-I`，`include` 仍可正常解析。
 
 生成后插件自动发现，不需要修改 `RtlSignalPeek.ini`。仓库不附带任何厂商或项目专用黑盒；需要边界模型时，用 `--blackbox` 或 `--blackbox-port` 提供。
 

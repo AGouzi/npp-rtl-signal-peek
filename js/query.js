@@ -6,6 +6,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { createClient } = require("./netgraph-client.js");
 const hierarchy = require("./hierarchy.js");
+const projectFiles = require("./project-files.js");
 
 const SOURCE_EXT = /\.(v|sv|vh|svh)$/i;
 const PROJECT_MARKER_EXTS = new Set([".xpr", ".xise", ".qpf", ".qsf", ".gprj", ".prj", ".spj"]);
@@ -159,6 +160,8 @@ function findProjectMarkerRoot(start, file, options) {
   let dir = path.resolve(start);
   for (let depth = 0; depth <= MARKER_SEARCH_LEVELS; depth += 1) {
     if (hasProjectMarker(dir, file)) {
+      const projectProbe = probeProjectFileList(dir, options, file);
+      if (projectProbe && projectProbe.count > 0) return dir;
       const probe = probeScope(dir, { ...options, smart: true });
       if (probe.count > 0 && !probe.capped) return dir;
       if (probe.capped) break;
@@ -169,6 +172,25 @@ function findProjectMarkerRoot(start, file, options) {
     dir = parent;
   }
   return "";
+}
+
+function probeProjectFileList(dir, options, file) {
+  let resolution;
+  try {
+    resolution = projectFiles.resolveProjectFiles({
+      root: dir,
+      currentFile: file,
+      maxFiles: options.maxFiles,
+      scanFallback: () => ({ files: [], truncated: false })
+    });
+  } catch (_) {
+    return null;
+  }
+  if (resolution.source === "scan") return null;
+  return {
+    count: resolution.files.length,
+    capped: Boolean(resolution.truncated)
+  };
 }
 
 function loadPinnedRoots(file) {
@@ -265,10 +287,12 @@ function excludeDirMatch(name, full, options) {
 }
 
 function shouldSkipDir(name, full, options) {
-  if (name.startsWith(".")) return true;
-  if (SKIP_DIR_NAMES.has(name)) return true;
-  if (SKIP_DIR_SUFFIXES.some((suffix) => name.endsWith(suffix))) return true;
-  if ((name === "ip" || name === "bd" || name === "ipshared") && /\.srcs[\\/]/i.test(full)) return true;
+  const lower = name.toLowerCase();
+  if (lower.startsWith(".")) return true;
+  if (SKIP_DIR_NAMES.has(lower)) return true;
+  if (SKIP_DIR_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return true;
+  if (projectFiles.isStaleDirName(lower)) return true;
+  if ((lower === "ip" || lower === "bd" || lower === "ipshared") && /\.srcs[\\/]/i.test(full)) return true;
   if (excludeDirMatch(name, full, options)) return true;
   return false;
 }
@@ -409,25 +433,45 @@ function collectSourceFiles(root, options = {}) {
   return files;
 }
 
-function sourceMapFromFiles(files) {
+function sourceMapFromFiles(files, sourceRoot) {
   const map = new Map();
   for (const file of files) {
     const base = path.basename(file);
     if (!map.has(base)) map.set(base, file);
     const lower = base.toLowerCase();
     if (!map.has(lower)) map.set(lower, file);
+    if (sourceRoot) {
+      const relative = path.relative(sourceRoot, file);
+      if (relative && !path.isAbsolute(relative)) {
+        const normalized = relative.replace(/\\/g, "/");
+        if (!map.has(normalized)) map.set(normalized, file);
+        if (!map.has(normalized.toLowerCase())) map.set(normalized.toLowerCase(), file);
+        const windowsStyle = relative.replace(/\//g, "\\");
+        if (!map.has(windowsStyle)) map.set(windowsStyle, file);
+        if (!map.has(windowsStyle.toLowerCase())) map.set(windowsStyle.toLowerCase(), file);
+      }
+    }
   }
   return map;
 }
 
 function sourceMap(root, options) {
-  return sourceMapFromFiles(collectSourceFiles(root, options));
+  return sourceMapFromFiles(collectSourceFiles(root, options), root);
 }
 
-function moduleAtLine(manifest, file, line) {
+function moduleAtLine(manifest, file, line, sourceRoot) {
   const base = path.basename(file);
+  const target = path.resolve(file).toLowerCase();
   const candidates = Object.entries(manifest.modules || {})
-    .filter(([, info]) => path.basename(info.file || "") === base)
+    .filter(([, info]) => {
+      const name = String(info.file || "");
+      if (!name) return false;
+      if (sourceRoot) {
+        const absolute = path.isAbsolute(name) ? path.resolve(name) : path.resolve(sourceRoot, name);
+        if (fs.existsSync(absolute)) return absolute.toLowerCase() === target;
+      }
+      return path.basename(name).toLowerCase() === base.toLowerCase();
+    })
     .filter(([, info]) => Number(line) >= Number(info.start || 1) && Number(line) <= Number(info.end || Number.MAX_SAFE_INTEGER))
     .map(([name, info]) => ({ name, info }));
   if (candidates.length) {
@@ -463,9 +507,14 @@ function chooseInstance(manifest, moduleName, requested) {
   return manifest.top;
 }
 
-function resolveRecordFile(fileName, currentFile, files) {
-  if (path.basename(currentFile) === path.basename(fileName)) return path.resolve(currentFile);
-  return files.get(path.basename(fileName)) || files.get(path.basename(fileName).toLowerCase()) || fileName;
+function resolveRecordFile(fileName, currentFile, files, sourceRoot) {
+  const recordName = String(fileName || "");
+  const resolved = path.isAbsolute(recordName) ? path.resolve(recordName) : path.resolve(sourceRoot || "", recordName);
+  if (fs.existsSync(resolved) && fileSize(resolved) >= 0) return resolved;
+  if (!/[\\/]/.test(recordName) && path.basename(currentFile).toLowerCase() === path.basename(recordName).toLowerCase()) {
+    return path.resolve(currentFile);
+  }
+  return files.get(path.basename(recordName)) || files.get(path.basename(recordName).toLowerCase()) || recordName;
 }
 
 function findProjectNetgraph(sourceRoot) {
@@ -594,6 +643,11 @@ function fallbackTextIndex(options) {
       files.unshift(current);
     }
   }
+  const maxFiles = Number(options.maxFiles) > 0 ? Number(options.maxFiles) : DEFAULT_MAX_FILES;
+  if (files.length > maxFiles) {
+    files.length = maxFiles;
+    options.partial = true;
+  }
   const records = [];
   const started = Date.now();
   const maxIndexMs = Number(options.maxIndexMs) > 0 ? Number(options.maxIndexMs) : DEFAULT_MAX_INDEX_MS;
@@ -665,6 +719,27 @@ function fallbackModule(file, line, manifest) {
   return moduleName || (manifest && manifest.top) || "unknown";
 }
 
+function prioritizeCurrentFile(files, currentFile, maxFiles) {
+  const result = files.slice();
+  let trimmed = false;
+  if (currentFile) {
+    const current = path.resolve(currentFile);
+    const currentLower = current.toLowerCase();
+    const index = result.findIndex((file) => path.resolve(file).toLowerCase() === currentLower);
+    if (index > 0) {
+      result.splice(index, 1);
+      result.unshift(current);
+    } else if (index < 0 && fs.existsSync(current) && fileSize(current) <= MAX_SOURCE_FILE_BYTES) {
+      result.unshift(current);
+    }
+  }
+  if (maxFiles > 0 && result.length > maxFiles) {
+    result.length = maxFiles;
+    trimmed = true;
+  }
+  return { files: result, trimmed };
+}
+
 function formatScopeLabel(scope) {
   const name = path.basename(scope.root) || scope.root;
   let label;
@@ -674,7 +749,13 @@ function formatScopeLabel(scope) {
   else if (scope.kind === "container") label = `容器目录 ${name}（仅当前层）`;
   else label = `范围 ${name}`;
   if (Number.isFinite(scope.fileCount)) {
-    label += `（${scope.fileCount} 文件${scope.truncated ? "，已限制" : ""}）`;
+    const suffix = `${scope.fileCount} 文件${scope.truncated ? "，已限制" : ""}`;
+    if (scope.fileSource === "xpr") label += ` · 工程文件表 .xpr（${suffix}）`;
+    else if (scope.fileSource === "filelist") label += ` · 工程文件表 filelist（${suffix}）`;
+    else label += ` · 目录扫描（${suffix}）`;
+    if (scope.fileWarnings && scope.fileWarnings.length) {
+      label += ` · 文件表警告 ${scope.fileWarnings.length} 条`;
+    }
   }
   return label;
 }
@@ -682,6 +763,8 @@ function formatScopeLabel(scope) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const scriptDir = __dirname;
+  if (args.filelist === true) throw new Error("--filelist 缺少路径");
+  if (args.xpr === true) throw new Error("--xpr 缺少路径");
   const file = args.file ? path.resolve(String(args.file)) : "";
   const line = Math.max(1, Number(args.line) || 1);
   const signal = clean(args.signal || "");
@@ -697,9 +780,32 @@ async function main() {
   };
   const scope = resolveScope(file, configuredRoots, options);
   const sourceRoot = scope.root;
+  const smartScope = scope.kind === "marker";
   const collectionOptions = scope.container
     ? { ...options, downLevels: 0 }
     : { ...options };
+  const fileResolution = projectFiles.resolveProjectFiles({
+    root: sourceRoot,
+    currentFile: file,
+    explicitFilelist: args.filelist && args.filelist !== true ? path.resolve(String(args.filelist)) : "",
+    explicitXpr: args.xpr && args.xpr !== true ? path.resolve(String(args.xpr)) : "",
+    maxFiles: options.maxFiles,
+    scanFallback: () => {
+      const scanOptions = { ...collectionOptions, smart: smartScope };
+      const files = collectSourceFiles(sourceRoot, scanOptions);
+      return {
+        files,
+        truncated: Boolean(scanOptions.truncated),
+        reason: scanOptions.truncatedReason || ""
+      };
+    }
+  });
+  const projectFileList = fileResolution.files;
+  scope.fileSource = fileResolution.source;
+  scope.fileListPath = fileResolution.path || "";
+  scope.fileCount = projectFileList.length;
+  scope.fileWarnings = fileResolution.warnings;
+  scope.truncated = Boolean(scope.truncated || fileResolution.truncated);
   let netgraphDir = path.resolve(args.netgraph ? String(args.netgraph) : path.join(scriptDir, "..", "demo", "netgraph"));
   let netgraphSourceRoot = path.resolve(args["netgraph-source-root"]
     ? String(args["netgraph-source-root"])
@@ -714,8 +820,12 @@ async function main() {
     }
   }
   const top = clean(args.top || "demo_top");
-  const forceTextIndex = args["text-index"] === true || String(args["text-index"]) === "1" || !isWithin(file, netgraphSourceRoot);
-  const smartScope = scope.kind === "marker";
+  const fileInProjectList = projectFileList.some(
+    (item) => path.resolve(item).toLowerCase() === path.resolve(file).toLowerCase()
+  );
+  const forceTextIndex = args["text-index"] === true ||
+    String(args["text-index"]) === "1" ||
+    (!isWithin(file, netgraphSourceRoot) && !fileInProjectList);
   if (!signal) throw new Error("missing --signal");
 
   let client = null;
@@ -732,14 +842,10 @@ async function main() {
       records = [];
       mode = `文件 ${(size / (1024 * 1024)).toFixed(1)} MB 超过 4 MB，未执行索引`;
     } else {
-      const scanOptions = { ...collectionOptions, smart: smartScope };
-      const files = collectSourceFiles(sourceRoot, scanOptions);
+      const prioritized = prioritizeCurrentFile(projectFileList, file, options.maxFiles);
+      const files = prioritized.files;
+      if (prioritized.trimmed) scope.truncated = true;
       scope.fileCount = files.length;
-      scope.truncated = Boolean(scope.truncated || scanOptions.truncated);
-      const resolvedFile = path.resolve(file);
-      if (file && !files.some((item) => path.resolve(item).toLowerCase() === resolvedFile.toLowerCase())) {
-        files.unshift(file);
-      }
       let hierarchyResult = null;
       if (args["text-index"] !== true && String(args["text-index"]) !== "1") {
         try {
@@ -772,7 +878,7 @@ async function main() {
           : "源文件已变化";
         throw new Error(`连接图已过期：${reason}`);
       }
-      moduleName = moduleAtLine(manifest, file, line) || fallbackModule(file, line, null);
+      moduleName = moduleAtLine(manifest, file, line, netgraphSourceRoot) || fallbackModule(file, line, null);
       if (!manifest.modules || !manifest.modules[moduleName]) {
         throw new Error(`模块 ${moduleName || "未知"} 不在连接图中，可重新生成 netgraph 纳入该文件`);
       }
@@ -786,16 +892,12 @@ async function main() {
       });
       mode = autoNetgraph ? "Verilator AST 真实连接 · 工程连接图" : "Verilator AST 真实连接";
       if (freshness.state === "unknown") mode += " · 连接图未校验";
-      const scanOptions = { ...collectionOptions, smart: smartScope };
-      const sourceFiles = collectSourceFiles(sourceRoot, scanOptions);
-      scope.fileCount = sourceFiles.length;
-      scope.truncated = Boolean(scope.truncated || scanOptions.truncated);
-      const files = sourceMapFromFiles(sourceFiles);
+      const files = sourceMapFromFiles(projectFileList, netgraphSourceRoot);
       records = [];
       for (const group of result.groups) {
         for (const item of group.items) {
           records.push({
-            file: resolveRecordFile(item.file, file, files),
+            file: resolveRecordFile(item.file, file, files, netgraphSourceRoot),
             line: item.line,
             module: item.module,
             instancePath: item.instancePath || group.path,
@@ -812,7 +914,17 @@ async function main() {
     } catch (error) {
       moduleName = fallbackModule(file, line, null);
       instancePath = "";
-      const fallbackOptions = { sourceRoot, signal, currentFile: file, smart: smartScope, ...collectionOptions };
+      const prioritized = prioritizeCurrentFile(projectFileList, file, options.maxFiles);
+      if (prioritized.trimmed) scope.truncated = true;
+      scope.fileCount = prioritized.files.length;
+      const fallbackOptions = {
+        sourceRoot,
+        signal,
+        currentFile: file,
+        smart: smartScope,
+        files: prioritized.files,
+        ...collectionOptions
+      };
       records = fallbackTextIndex(fallbackOptions);
       mode = `文本索引（${error.message || "netgraph 不可用"}${fallbackOptions.partial ? "，部分" : ""}）`;
     }
@@ -878,7 +990,11 @@ async function main() {
   fs.writeSync(1, Buffer.from(output.join("\n") + "\n", "utf8"));
 }
 
-main().catch((error) => {
-  fs.writeSync(2, Buffer.from(`${error.stack || error.message || error}\n`, "utf8"));
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    fs.writeSync(2, Buffer.from(`${error.stack || error.message || error}\n`, "utf8"));
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { resolveRecordFile };

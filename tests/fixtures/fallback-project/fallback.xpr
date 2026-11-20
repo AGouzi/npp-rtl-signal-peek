@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Project Version="7">
+  <FileSet Name="sources_1" Type="DesignSrcs">
+    <File Path="$PPRDIR/rtl/missing-only.v"/>
+  </FileSet>
+</Project>

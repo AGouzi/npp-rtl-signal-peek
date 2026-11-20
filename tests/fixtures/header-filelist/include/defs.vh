@@ -1,0 +1,1 @@
+`define RTL_PEEK_DEMO_WIDTH 8

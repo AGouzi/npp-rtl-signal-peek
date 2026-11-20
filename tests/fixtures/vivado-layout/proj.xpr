@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Project Version="7" Path="E:/old/location/proj.xpr">
+  <FileSet Name="sources_1" Type="DesignSrcs" RelSrcDir="$PSRCDIR/sources_1">
+    <File Path="$PSRCDIR/sources_1/new/top.v"/>
+    <File Path="$PSRCDIR/sources_1/new/helper.v" IsEnabled="1"/>
+    <File Path="$PSRCDIR/sources_1/ip/core.xci"/>
+  </FileSet>
+  <FileSet Name="constrs_1" Type="Constrs" RelSrcDir="$PSRCDIR/constrs_1">
+    <File Path="$PSRCDIR/constrs_1/top.xdc"/>
+  </FileSet>
+  <FileSet Name="sim_1" Type="SimulationSrcs" RelSrcDir="$PSRCDIR/sim_1">
+    <File Path="$PSRCDIR/sim_1/new/tb_top.v"/>
+  </FileSet>
+  <FileSet Name="stale_1" Type="BlockSrcs" RelSrcDir="$PSRCDIR/stale_1">
+    <File Path="$PSRCDIR/stale_1/old.v"/>
+  </FileSet>
+</Project>

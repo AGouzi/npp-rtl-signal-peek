@@ -8,6 +8,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const core = require("./netgraph-core.js");
 const hierarchy = require("../js/hierarchy.js");
+const projectFiles = require("../js/project-files.js");
 
 const SOURCE_EXT = /\.(v|sv)$/i;
 const HASH_FILE_LIMIT = 400;
@@ -16,7 +17,7 @@ const MULTI_ARGS = new Set(["rtl", "include", "blackbox", "blackbox-port", "excl
 const SKIP_DIRS = new Set([
   ".git", ".svn", ".hg", ".rtl-peek", ".xil", ".cache", ".gen", ".runs", ".hw",
   ".sim", ".ip_user_files", "ip_user_files", "xsim.dir", "node_modules",
-  "_work", "backup", "outputs"
+  "_work", "backup", "archive", "doc", "ai_output", "outputs"
 ]);
 const SKIP_DIR_SUFFIXES = [".runs", ".cache", ".gen", ".hw", ".sim", ".ip_user_files"];
 
@@ -62,13 +63,15 @@ function shouldSkipDir(name) {
   const lower = name.toLowerCase();
   if (lower.startsWith(".")) return true;
   if (SKIP_DIRS.has(lower)) return true;
-  return SKIP_DIR_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+  if (SKIP_DIR_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return true;
+  return projectFiles.isStaleDirName(lower);
 }
 
 function collectFiles(dirs, options) {
   const files = [];
   const seen = new Set();
   const includeTb = Boolean(options && options.includeTb);
+  const skipSrcs = Boolean(options && options.skipSrcs);
   const excludes = (options && options.excludes) || [];
 
   const add = (file) => {
@@ -95,6 +98,7 @@ function collectFiles(dirs, options) {
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
+        if (skipSrcs && entry.name.toLowerCase().endsWith(".srcs")) continue;
         if (!shouldSkipDir(entry.name)) walk(full, depth + 1);
       } else if (entry.isFile()) {
         add(full);
@@ -114,6 +118,16 @@ function collectFiles(dirs, options) {
     else if (stat.isFile()) add(resolved);
   }
   return files;
+}
+
+function partitionCompileFiles(files) {
+  const sources = [];
+  const headers = [];
+  for (const file of files) {
+    if (SOURCE_EXT.test(path.basename(file))) sources.push(file);
+    else headers.push(file);
+  }
+  return { sources, headers };
 }
 
 function defaultRtlDirs(sourceRoot) {
@@ -353,6 +367,13 @@ function pathKey(file, sourceRoot) {
   return null;
 }
 
+function sourceKey(file, sourceRoot) {
+  const relative = path.relative(sourceRoot, file);
+  if (!relative) return ".";
+  if (path.isAbsolute(relative)) return path.resolve(file).replace(/\\/g, "/");
+  return relative.replace(/\\/g, "/");
+}
+
 function resolveInput(value, base) {
   const text = String(value);
   if (path.isAbsolute(text)) return path.resolve(text);
@@ -377,9 +398,9 @@ function emptyShard(name) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.filelist === true) throw new Error("--filelist 缺少路径");
+  if (args.xpr === true) throw new Error("--xpr 缺少路径");
   const sourceRoot = path.resolve(args["source-root"] || process.cwd());
-  const rtlDirs = (args.rtl && args.rtl.length ? args.rtl : defaultRtlDirs(sourceRoot))
-    .map((dir) => resolveInput(dir, sourceRoot));
   const outputDir = path.resolve(sourceRoot, args.out || path.join(".rtl-peek", "netgraph"));
   const top = String(args.top || "");
   if (!top) throw new Error("缺少 --top <顶层模块>");
@@ -387,8 +408,117 @@ function main() {
   const includes = (args.include || []).map((dir) => resolveInput(dir, sourceRoot));
   const blackboxFiles = (args.blackbox || []).map((file) => resolveInput(file, sourceRoot));
   const blackboxPortFiles = (args["blackbox-port"] || []).map((file) => resolveInput(file, sourceRoot));
-  const files = collectFiles(rtlDirs, { includeTb: args["include-tb"], excludes: args.exclude || [] });
-  if (!files.length) throw new Error(`扫描范围内没有找到 .v/.sv：${rtlDirs.join(", ")}`);
+
+  const explicitFilelist = args.filelist && args.filelist !== true
+    ? resolveInput(String(args.filelist), process.cwd())
+    : "";
+  const explicitXpr = args.xpr && args.xpr !== true
+    ? resolveInput(String(args.xpr), process.cwd())
+    : "";
+  let rtlDirs = [];
+  let files = [];
+  let fileSource = "scan";
+  let fileListPath = "";
+  let fileWarnings = [];
+  let fileIncludeDirs = [];
+
+  if (explicitFilelist || explicitXpr) {
+    const parsed = explicitFilelist
+      ? projectFiles.parseGenericFilelist(explicitFilelist)
+      : projectFiles.parseXprFileList(explicitXpr);
+    files = parsed.files;
+    fileSource = parsed.source;
+    fileListPath = parsed.path;
+    fileWarnings = parsed.warnings;
+    fileIncludeDirs = parsed.includeDirs || [];
+  } else if (args.rtl && args.rtl.length) {
+    rtlDirs = args.rtl.map((dir) => resolveInput(dir, sourceRoot));
+    files = collectFiles(rtlDirs, { includeTb: args["include-tb"], excludes: args.exclude || [] });
+  } else {
+    let selectedXprPath = "";
+    const cacheFilelist = path.join(sourceRoot, projectFiles.CACHE_FILELIST);
+    if (fs.existsSync(cacheFilelist)) {
+      const parsed = projectFiles.parseGenericFilelist(cacheFilelist);
+      fileWarnings = parsed.warnings.slice();
+      if (parsed.files.length) {
+        files = parsed.files;
+        fileSource = parsed.source;
+        fileListPath = parsed.path;
+        fileIncludeDirs = parsed.includeDirs || [];
+      } else {
+        fileWarnings.push(`自动读取的 .rtl-peek/filelist.txt 没有可用 HDL 文件（${cacheFilelist}），回退 .xpr/扫描`);
+      }
+    }
+    if (!files.length) {
+      const rootXpr = projectFiles.findRootXpr(sourceRoot);
+      if (rootXpr.path) {
+        selectedXprPath = rootXpr.path;
+        const parsed = projectFiles.parseXprFileList(rootXpr.path);
+        fileWarnings.push(...rootXpr.warnings, ...parsed.warnings);
+        if (parsed.files.length) {
+          files = parsed.files;
+          fileSource = parsed.source;
+          fileListPath = parsed.path;
+          fileIncludeDirs = parsed.includeDirs || [];
+        } else {
+          fileWarnings.push(`自动识别的 .xpr 没有可用 HDL 文件（${rootXpr.path}），回退到该工程目录扫描`);
+        }
+      }
+    }
+    if (!files.length) {
+      if (selectedXprPath) {
+        const srcsDir = projectFiles.findSrcsDirForXpr(selectedXprPath);
+        if (srcsDir) {
+          const sourceDirs = [];
+          try {
+            for (const entry of fs.readdirSync(srcsDir, { withFileTypes: true })) {
+              if (entry.isDirectory() && /^sources(_\d+)?$/i.test(entry.name)) {
+                sourceDirs.push(path.join(srcsDir, entry.name));
+              }
+            }
+          } catch (_) {
+            // Fall through to the project directory scan.
+          }
+          rtlDirs = sourceDirs.length ? sourceDirs : [srcsDir];
+          files = collectFiles(rtlDirs, { includeTb: args["include-tb"], excludes: args.exclude || [] });
+        } else {
+          rtlDirs = [path.dirname(selectedXprPath)];
+          files = collectFiles(rtlDirs, {
+            includeTb: args["include-tb"],
+            excludes: args.exclude || [],
+            skipSrcs: true
+          });
+        }
+      } else {
+        rtlDirs = defaultRtlDirs(sourceRoot);
+        files = collectFiles(rtlDirs, { includeTb: args["include-tb"], excludes: args.exclude || [] });
+      }
+    }
+  }
+  if (!files.length) {
+    const detail = fileListPath || rtlDirs.join(", ") || sourceRoot;
+    throw new Error(`扫描范围内没有找到 .v/.sv：${detail}`);
+  }
+  if (fileWarnings.length) {
+    for (const warning of fileWarnings.slice(0, 10)) console.warn(`warning: ${warning}`);
+    if (fileWarnings.length > 10) console.warn(`warning: 还有 ${fileWarnings.length - 10} 条文件表警告`);
+  }
+  for (const dir of fileIncludeDirs) {
+    if (!includes.some((item) => path.resolve(item).toLowerCase() === path.resolve(dir).toLowerCase())) {
+      includes.push(dir);
+    }
+  }
+  const partitioned = partitionCompileFiles(files);
+  if (!partitioned.sources.length) {
+    throw new Error(`文件表中没有 .v/.sv 源文件：${fileListPath || rtlDirs.join(", ") || sourceRoot}`);
+  }
+  for (const header of partitioned.headers) {
+    const dir = path.dirname(header);
+    if (!includes.some((item) => path.resolve(item).toLowerCase() === path.resolve(dir).toLowerCase())) {
+      includes.push(dir);
+    }
+  }
+  const compileFiles = partitioned.sources;
 
   const indexed = moduleIndex(files);
   if (!indexed.modules.has(top)) throw new Error(`扫描结果中找不到顶层模块 ${top}`);
@@ -437,7 +567,7 @@ function main() {
           const absoluteFile = path.isAbsolute(shard.file)
             ? shard.file
             : path.resolve(sourceRoot, shard.file);
-          shard.file = pathKey(absoluteFile, sourceRoot) || path.basename(absoluteFile);
+          shard.file = sourceKey(absoluteFile, sourceRoot);
           shards.set(module.name, shard);
           added += 1;
         }
@@ -445,7 +575,7 @@ function main() {
       return { added, diagnostics: run.diagnostics };
     };
 
-    const mainRun = addTree(runVerilator(tempDir, top, files, includes, extraFiles, "main"));
+    const mainRun = addTree(runVerilator(tempDir, top, compileFiles, includes, extraFiles, "main"));
     let designModuleCount = mainRun.added;
     let allDiagnostics = mainRun.diagnostics;
 
@@ -459,7 +589,7 @@ function main() {
     for (const root of extraRoots) {
       try {
         const prefix = `root_${root.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
-        const run = runVerilator(tempDir, root, files, includes, extraFiles, prefix);
+        const run = runVerilator(tempDir, root, compileFiles, includes, extraFiles, prefix);
         const result = addTree(run);
         designModuleCount += result.added;
         allDiagnostics += `\n${result.diagnostics}`;
@@ -510,17 +640,17 @@ function main() {
     for (const file of files) hashBytes += fs.statSync(file).size;
     const withHashes = files.length <= HASH_FILE_LIMIT && hashBytes <= HASH_BYTE_LIMIT;
     for (const file of files) {
-      const key = pathKey(file, sourceRoot);
-      if (withHashes && key) sourceHashes[key] = hashText(fs.readFileSync(file));
+      const key = sourceKey(file, sourceRoot);
+      if (withHashes) sourceHashes[key] = hashText(fs.readFileSync(file));
     }
     const sourceMtimes = {};
     for (const file of [...files, ...blackboxFiles]) {
-      const key = pathKey(file, sourceRoot);
-      if (key) sourceMtimes[key] = fs.statSync(file).mtimeMs;
+      const key = sourceKey(file, sourceRoot);
+      sourceMtimes[key] = fs.statSync(file).mtimeMs;
     }
     for (const file of blackboxPortFiles) {
-      const key = pathKey(file, sourceRoot);
-      if (key) sourceMtimes[key] = fs.statSync(file).mtimeMs;
+      const key = sourceKey(file, sourceRoot);
+      sourceMtimes[key] = fs.statSync(file).mtimeMs;
     }
     const combinedHash = hashText(Object.entries(sourceHashes).map(([file, hash]) => `${file}:${hash}`).join("\n"));
     const signalCount = [...shards.values()].reduce((sum, shard) => sum + shard.signals.length, 0);
@@ -541,6 +671,8 @@ function main() {
       scope: {
         sourceRoot: ".",
         rtlDirs: rtlDirs.map((dir) => pathKey(dir, sourceRoot)).filter(Boolean),
+        fileSource,
+        fileList: fileListPath ? (pathKey(fileListPath, sourceRoot) || path.basename(fileListPath)) : "",
         includes: includes.map((dir) => pathKey(dir, sourceRoot)).filter(Boolean),
         blackboxes: [...blackboxNames].sort()
       },
@@ -562,7 +694,7 @@ function main() {
     core.writeGraph(outputDir, manifest, shards);
     console.log(`netgraph: ${outputDir}`);
     console.log(`${manifest.parser} · ${manifest.stats.designModules} design modules · ${manifest.stats.instances} instances · ${manifest.stats.signals} signals`);
-    console.log(`source files: ${files.length}${withHashes ? " (sha256)" : " (mtime only)"} · blackboxes: ${[...blackboxNames].sort().join(", ") || "none"}`);
+    console.log(`source files: ${files.length} from ${fileSource}${fileListPath ? ` (${path.basename(fileListPath)})` : ""}${withHashes ? " (sha256)" : " (mtime only)"} · blackboxes: ${[...blackboxNames].sort().join(", ") || "none"}`);
     const warningLines = allDiagnostics.split(/\r?\n/).filter((line) => /^%(Error|Warning)/.test(line));
     if (warningLines.length) {
       console.log(`verilator diagnostics: ${warningLines.length} (first: ${warningLines[0]})`);
@@ -576,9 +708,13 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (error) {
-  console.error(`build_netgraph: ${error.message}`);
-  process.exitCode = 1;
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    console.error(`build_netgraph: ${error.message}`);
+    process.exitCode = 1;
+  }
 }
+
+module.exports = { partitionCompileFiles, sourceKey };
